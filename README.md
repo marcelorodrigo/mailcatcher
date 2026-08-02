@@ -15,10 +15,6 @@ Pull it:
 
     docker pull marcelorodrigo/mailcatcher
     
-You can also pull from Github Docker Registry:
-
-    docker pull ghcr.io/marcelorodrigo/mailcatcher:master
-
 Running as service exposing ports:
 
     docker run -d -p 1080:1080 -p 1025:1025 --name mailcatcher marcelorodrigo/mailcatcher
