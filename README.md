@@ -2,7 +2,6 @@
 ![Docker Pulls](https://img.shields.io/docker/pulls/marcelorodrigo/mailcatcher)
 ![Linux AMD64](https://img.shields.io/badge/linux-amd64-orange)
 ![Linux ARM64](https://img.shields.io/badge/linux-arm64-orange)
-![Linux ARMV7](https://img.shields.io/badge/linux-armv7-orange)
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=marcelorodrigo_mailcatcher&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=marcelorodrigo_mailcatcher)
 [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=marcelorodrigo_mailcatcher&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=marcelorodrigo_mailcatcher)
 
