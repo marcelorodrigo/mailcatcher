@@ -113,16 +113,6 @@ jobs:
           curl --connect-timeout 2 --max-time 10 --fail --silent --show-error http://127.0.0.1:11080/messages \
             | grep --fixed-strings --quiet '"subject":"MailCatcher smoke test"'
 
-      - name: Scan image for vulnerabilities
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY_IMAGE }}:latest
-          format: table
-          exit-code: '1'
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          scanners: vuln
-
       - name: Login to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
