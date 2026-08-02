@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -29,6 +29,62 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Build smoke test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: mailcatcher:smoke-test
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="mailcatcher:smoke-test"
+          container="mailcatcher-smoke-test"
+
+          cleanup() {
+            status=$?
+            if [[ "$status" -ne 0 ]]; then
+              docker logs "$container" || true
+            fi
+            docker rm --force "$container" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          [[ "$(docker run --rm "$image" ruby --version)" == "ruby 4.0.6"* ]]
+          [[ "$(docker run --rm "$image" mailcatcher --version)" == "MailCatcher v0.10.0" ]]
+          docker run --rm "$image" sh -c \
+            'apk info --exists libstdc++ sqlite-libs && ! apk info --exists .build-deps'
+
+          docker run --detach --name "$container" \
+            --publish 127.0.0.1:11025:1025 \
+            --publish 127.0.0.1:11080:1080 \
+            "$image"
+
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:11080/ >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" -eq 30 ]]; then
+              echo "MailCatcher HTTP endpoint did not become ready" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          printf 'From: smoke-sender@example.test\r\nTo: smoke-recipient@example.test\r\nSubject: MailCatcher smoke test\r\n\r\nRuntime validation\r\n' \
+            | curl --fail --silent --show-error \
+                --url smtp://127.0.0.1:11025 \
+                --mail-from smoke-sender@example.test \
+                --mail-rcpt smoke-recipient@example.test \
+                --upload-file -
+
+          curl --fail --silent --show-error http://127.0.0.1:11080/messages \
+            | grep --fixed-strings --quiet '"subject":"MailCatcher smoke test"'
 
       - name: Login to Github Container Registry
         if: github.event_name != 'pull_request'
@@ -65,16 +121,16 @@ jobs:
             type=semver,pattern={{major}}
             type=sha
       - name: Build and push
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta_mailcatcher.outputs.tags }}
           labels: ${{ steps.meta_mailcatcher.outputs.labels }}
       - name: Docker Hub Description
         if: github.event_name != 'pull_request'
-        uses: peter-evans/dockerhub-description@v3
+        uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
