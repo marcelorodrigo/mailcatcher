@@ -1,4 +1,5 @@
 name: Docker Build
+
 on:
   workflow_dispatch:
   push:
@@ -12,30 +13,63 @@ on:
       - 'dev'
       - 'v*.*.*'
 
-permissions: 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
   contents: read
-  packages: write
-  
+
+env:
+  REGISTRY_IMAGE: marcelorodrigo/mailcatcher
+
 jobs:
-  docker-images-build-and-push:
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            platform-pair: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            platform-pair: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-      
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: actions/checkout@v7
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
 
       - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build smoke test image
-        uses: docker/build-push-action@v7
+      - name: Build platform image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          platforms: ${{ matrix.platform }}
           load: true
           tags: mailcatcher:smoke-test
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
+          cache-from: type=gha,scope=mailcatcher-${{ matrix.platform-pair }}
+          cache-to: type=gha,ignore-error=true,scope=mailcatcher-${{ matrix.platform-pair }},mode=min
 
       - name: Smoke test
         shell: bash
@@ -86,54 +120,125 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:11080/messages \
             | grep --fixed-strings --quiet '"subject":"MailCatcher smoke test"'
 
-      - name: Login to Github Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v2
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Login to Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v2
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker Meta
-        id: meta_mailcatcher
-        uses: docker/metadata-action@v5
+      - name: Push platform image by digest
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          # list of Docker images to use as base name for tags
-          images: |
-            ghcr.io/marcelorodrigo/mailcatcher
-            marcelorodrigo/mailcatcher
-          # generate Docker tags based on the following events/attributes
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest_dir="${RUNNER_TEMP}/digests"
+          mkdir -p "$digest_dir"
+          touch "$digest_dir/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.platform-pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish multi-platform image
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            # set latest tag for master branch
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}
-            type=schedule
             type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha
-      - name: Build and push
-        uses: docker/build-push-action@v7
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta_mailcatcher.outputs.tags }}
-          labels: ${{ steps.meta_mailcatcher.outputs.labels }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Create manifest list and push tags
+        shell: bash
+        env:
+          METADATA_JSON: ${{ steps.meta.outputs.json }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          digest_files=("${RUNNER_TEMP}/digests/"*)
+          if [[ "${#digest_files[@]}" -ne 2 ]]; then
+            echo "Expected two platform digests, found ${#digest_files[@]}" >&2
+            exit 1
+          fi
+
+          tag_args=()
+          while IFS= read -r tag; do
+            tag_args+=(--tag "$tag")
+          done < <(jq --raw-output '.tags[]' <<< "$METADATA_JSON")
+
+          source_args=()
+          for digest_file in "${digest_files[@]}"; do
+            source_args+=("${REGISTRY_IMAGE}@sha256:${digest_file##*/}")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" "${source_args[@]}"
+
+      - name: Inspect image
+        shell: bash
+        env:
+          IMAGE_VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${REGISTRY_IMAGE}:${IMAGE_VERSION}"
+
+  docker-hub-description:
+    name: Update Docker Hub description
+    if: github.event_name != 'pull_request'
+    needs: merge
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Docker Hub Description
-        if: github.event_name != 'pull_request'
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
-          repository: marcelorodrigo/mailcatcher
+          repository: ${{ env.REGISTRY_IMAGE }}
           readme-filepath: ./README.md
           short-description: "Lightweight mailcatcher docker image"
