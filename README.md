@@ -8,7 +8,7 @@
 # Mailcatcher
 Lightweight multiarchitecture [Mailcatcher](https://mailcatcher.me/) Docker image
 
-Based on [Alpine Linux](https://www.alpinelinux.org/), it generates a very small footprint (~27Mb) docker image.
+Based on [Alpine Linux](https://www.alpinelinux.org/), it keeps the Docker image footprint small.
 ## Usage
 
 Pull it:

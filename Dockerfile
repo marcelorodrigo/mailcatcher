@@ -1,4 +1,4 @@
-FROM ruby:2.7.6-alpine3.15
+FROM ruby:4.0.6-alpine3.24
 LABEL maintainer="Marcelo Wiebbelling <mrodrigow@gmail.com>"
 RUN set -xe \
     && apk add --no-cache \
@@ -7,7 +7,7 @@ RUN set -xe \
     && apk add --no-cache --virtual .build-deps \
         build-base \
         sqlite-dev \
-    && gem install mailcatcher -v 0.8.2 -N \
+    && gem install mailcatcher -v 0.10.0 -N \
     && apk del .build-deps
 EXPOSE 1025
 EXPOSE 1080
