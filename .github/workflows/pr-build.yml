@@ -1,21 +1,14 @@
-name: Docker Build
+name: PR Docker Build
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - 'master'
-    tags:
-      - 'v*.*.*'
   pull_request:
     branches:
-      - 'master'
-      - 'dev'
-      - 'v*.*.*'
+      - master
+      - dev
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -42,20 +35,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ env.REGISTRY_IMAGE }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -65,18 +44,19 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           load: true
-          tags: mailcatcher:smoke-test
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ env.REGISTRY_IMAGE }}:pr-${{ github.event.pull_request.number }}
           provenance: false
           cache-from: type=gha,scope=mailcatcher-${{ matrix.platform-pair }}
           cache-to: type=gha,ignore-error=true,scope=mailcatcher-${{ matrix.platform-pair }},mode=min
 
       - name: Smoke test
         shell: bash
+        env:
+          IMAGE: ${{ env.REGISTRY_IMAGE }}:pr-${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
 
-          image="mailcatcher:smoke-test"
+          image="$IMAGE"
           container="mailcatcher-smoke-test"
 
           cleanup() {
@@ -89,8 +69,11 @@ jobs:
           }
           trap cleanup EXIT
 
-          [[ "$(docker run --rm "$image" ruby --version)" == "ruby 4.0.6"* ]]
-          [[ "$(docker run --rm "$image" mailcatcher --version)" == "MailCatcher v0.10.0" ]]
+          ruby_version="$(docker image inspect --format '{{ index .Config.Labels "io.github.marcelorodrigo.mailcatcher.ruby-version" }}' "$image")"
+          mailcatcher_version="$(docker image inspect --format '{{ index .Config.Labels "io.github.marcelorodrigo.mailcatcher.version" }}' "$image")"
+
+          [[ "$(docker run --rm "$image" ruby --version)" == "ruby ${ruby_version}"* ]]
+          [[ "$(docker run --rm "$image" mailcatcher --version)" == "MailCatcher v${mailcatcher_version}" ]]
           docker run --rm "$image" sh -c \
             'apk info --exists libstdc++ sqlite-libs && ! apk info --exists .build-deps'
 
@@ -100,7 +83,7 @@ jobs:
             "$image"
 
           for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:11080/ >/dev/null; then
+            if curl --connect-timeout 2 --max-time 5 --fail --silent http://127.0.0.1:11080/ >/dev/null; then
               break
             fi
             if [[ "$attempt" -eq 30 ]]; then
@@ -111,134 +94,11 @@ jobs:
           done
 
           printf 'From: smoke-sender@example.test\r\nTo: smoke-recipient@example.test\r\nSubject: MailCatcher smoke test\r\n\r\nRuntime validation\r\n' \
-            | curl --fail --silent --show-error \
+            | curl --connect-timeout 5 --max-time 15 --fail --silent --show-error \
                 --url smtp://127.0.0.1:11025 \
                 --mail-from smoke-sender@example.test \
                 --mail-rcpt smoke-recipient@example.test \
                 --upload-file -
 
-          curl --fail --silent --show-error http://127.0.0.1:11080/messages \
+          curl --connect-timeout 2 --max-time 10 --fail --silent --show-error http://127.0.0.1:11080/messages \
             | grep --fixed-strings --quiet '"subject":"MailCatcher smoke test"'
-
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Push platform image by digest
-        if: github.event_name != 'pull_request'
-        id: push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export digest
-        if: github.event_name != 'pull_request'
-        shell: bash
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: |
-          set -euo pipefail
-          digest_dir="${RUNNER_TEMP}/digests"
-          mkdir -p "$digest_dir"
-          touch "$digest_dir/${DIGEST#sha256:}"
-
-      - name: Upload digest
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: digests-${{ matrix.platform-pair }}
-          path: ${{ runner.temp }}/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    name: Publish multi-platform image
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v8
-        with:
-          pattern: digests-*
-          path: ${{ runner.temp }}/digests
-          merge-multiple: true
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ env.REGISTRY_IMAGE }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'master') }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Create manifest list and push tags
-        shell: bash
-        env:
-          METADATA_JSON: ${{ steps.meta.outputs.json }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          digest_files=("${RUNNER_TEMP}/digests/"*)
-          if [[ "${#digest_files[@]}" -ne 2 ]]; then
-            echo "Expected two platform digests, found ${#digest_files[@]}" >&2
-            exit 1
-          fi
-
-          tag_args=()
-          while IFS= read -r tag; do
-            tag_args+=(--tag "$tag")
-          done < <(jq --raw-output '.tags[]' <<< "$METADATA_JSON")
-
-          source_args=()
-          for digest_file in "${digest_files[@]}"; do
-            source_args+=("${REGISTRY_IMAGE}@sha256:${digest_file##*/}")
-          done
-
-          docker buildx imagetools create "${tag_args[@]}" "${source_args[@]}"
-
-      - name: Inspect image
-        shell: bash
-        env:
-          IMAGE_VERSION: ${{ steps.meta.outputs.version }}
-        run: docker buildx imagetools inspect "${REGISTRY_IMAGE}:${IMAGE_VERSION}"
-
-  docker-hub-description:
-    name: Update Docker Hub description
-    if: github.event_name != 'pull_request'
-    needs: merge
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Docker Hub Description
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-          repository: ${{ env.REGISTRY_IMAGE }}
-          readme-filepath: ./README.md
-          short-description: "Lightweight mailcatcher docker image"

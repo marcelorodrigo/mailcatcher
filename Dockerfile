@@ -1,5 +1,13 @@
-FROM ruby:4.0.6-alpine3.24
-LABEL maintainer="Marcelo Wiebbelling <mrodrigow@gmail.com>"
+ARG RUBY_VERSION=4.0.6
+FROM ruby:${RUBY_VERSION}-alpine3.24
+
+ARG RUBY_VERSION
+ARG MAILCATCHER_VERSION=0.10.0
+
+LABEL maintainer="Marcelo Wiebbelling <mrodrigow@gmail.com>" \
+      io.github.marcelorodrigo.mailcatcher.ruby-version="${RUBY_VERSION}" \
+      io.github.marcelorodrigo.mailcatcher.version="${MAILCATCHER_VERSION}"
+
 RUN set -xe \
     && apk add --no-cache \
         libstdc++ \
@@ -7,7 +15,7 @@ RUN set -xe \
     && apk add --no-cache --virtual .build-deps \
         build-base \
         sqlite-dev \
-    && gem install mailcatcher -v 0.10.0 -N \
+    && gem install mailcatcher -v "${MAILCATCHER_VERSION}" -N \
     && apk del .build-deps
 EXPOSE 1025
 EXPOSE 1080
