@@ -74,6 +74,7 @@ jobs:
 
           [[ "$(docker run --rm "$image" ruby --version)" == "ruby ${ruby_version}"* ]]
           [[ "$(docker run --rm "$image" mailcatcher --version)" == "MailCatcher v${mailcatcher_version}" ]]
+          [[ "$(docker run --rm "$image" id -un)" == "mailcatcher" ]]
           docker run --rm "$image" sh -c \
             'apk info --exists libstdc++ sqlite-libs && ! apk info --exists .build-deps'
 

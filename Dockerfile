@@ -16,7 +16,9 @@ RUN set -xe \
         build-base \
         sqlite-dev \
     && gem install mailcatcher -v "${MAILCATCHER_VERSION}" -N \
-    && apk del .build-deps
+    && apk del .build-deps \
+    && adduser -S -D -H mailcatcher
 EXPOSE 1025
 EXPOSE 1080
+USER mailcatcher
 CMD ["sh", "-c", "mailcatcher --no-quit --foreground --ip=0.0.0.0"]
